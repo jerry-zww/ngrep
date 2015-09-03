@@ -423,24 +423,43 @@ int main(int argc, char **argv) {
         filter = get_filter_from_argv(&argv[optind]);
 
         if (pcap_compile(pd, &pcapfilter, filter, 0, mask.s_addr)) {
+
             free(filter);
             filter = get_filter_from_argv(&argv[optind-1]);
-
+            match_data = NULL;
 #if USE_PCAP_RESTART
             PCAP_RESTART_FUNC();
 #endif
+
             if (pcap_compile(pd, &pcapfilter, filter, 0, mask.s_addr)) {
                 pcap_perror(pd, "pcap compile");
                 clean_exit(-1);
-            } else match_data = NULL;
+            }
         }
 
     } else {
         filter = strdup(BPF_FILTER_IP);
 
         if (pcap_compile(pd, &pcapfilter, filter, 0, mask.s_addr)) {
-            pcap_perror(pd, "pcap compile");
-            clean_exit(-1);
+            const char no_vlan_support[] = "no VLAN support";
+            char *err = pcap_geterr(pd);
+
+            if (strncmp(err, no_vlan_support, sizeof(no_vlan_support)-1) != 0) {
+                pcap_perror(pd, "pcap compile");
+                clean_exit(-1);
+            }
+
+            /* no VLAN support on requested interface, nuke it out of filter */
+            strncpy(strstr(filter, "vlan &&"), "       ",7);
+#if USE_PCAP_RESTART
+            PCAP_RESTART_FUNC();
+#endif
+
+            if (pcap_compile(pd, &pcapfilter, filter, 0, mask.s_addr)) {
+                printf("filter: %s\n", filter);
+                pcap_perror(pd, "pcap compile");
+                clean_exit(-1);
+            }
         }
     }
 
@@ -652,17 +671,25 @@ int main(int argc, char **argv) {
     return 0;
 }
 
+#define ETHERTYPE_WTF 0x4006
+
 static inline uint8_t vlan_frame_count(u_char *p, uint16_t limit) {
   uint8_t *et = (uint8_t*)(p + 12);
   uint16_t ether_type = EXTRACT_16BITS(et);
   uint8_t count = 0;
 
+  printf("ether_type = %04x\n", ether_type);
+
   while ((void*)et < (void*)(p + limit) &&
          ether_type != ETHERTYPE_IP &&
+         ether_type != ETHERTYPE_WTF &&
          ether_type != ETHERTYPE_IPV6) {
       count++;
       et += VLANHDR_SIZE;
       ether_type = EXTRACT_16BITS(et);
+
+  printf("ether_type = %04x\n", ether_type);
+
   }
 
   return count;
